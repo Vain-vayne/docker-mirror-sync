@@ -43,11 +43,11 @@ jobs:
           # 分割平台列表
           IFS=',' read -r -a PLATFORMS <<< "${{ github.event.inputs.platforms }}"
 
-          # 多架构清单列表
-          MANIFEST_TAGS=()
-
           # 遍历每个镜像进行同步
           for IMAGE in "${IMAGES[@]}"; do
+              # 多架构清单列表
+              MANIFEST_TAGS=()
+
               # 跳过空值（避免分隔符导致的空元素）
               [ -z "$IMAGE" ] && continue
 
@@ -125,39 +125,39 @@ jobs:
                   fi
               done
 
+              if [ -z "${MANIFEST_TAGS[*]}" ]; then
+                  echo "❌ 架构清单列表为空！"
+                  exit 1
+              fi
+
+              echo "多架构清单列表：${MANIFEST_TAGS[*]}"
+
+              # 使用 docker manifest create 命令创建清单列表
+              if docker manifest create "$ACR_IMAGE" "${MANIFEST_TAGS[@]}"; then
+                  echo "✅ 多架构清单列表创建成功"
+              else
+                  echo "❌ 多架构清单列表创建失败！"
+                  exit 1
+              fi
+
+              # 使用 docker manifest push 命令将清单列表推送到仓库
+              if docker manifest push "$ACR_IMAGE"; then
+                  echo "✅ 多架构清单列表 $ACR_IMAGE 推送成功！国内地址：$ACR_IMAGE"
+                  echo "现在可以使用 'docker pull $ACR_IMAGE' 拉取适合当前架构的镜像了。"
+              else
+                  echo "❌ 多架构清单列表 $ACR_IMAGE 推送失败！"
+                  exit 1
+              fi
+
+              echo "====================================="
+              echo "🎉 镜像 $IMAGE 同步完成！国内地址：$ACR_IMAGE"
+              echo "====================================="
+
               echo ""
           done
 
           echo "====================================="
           echo "🎉 所有镜像同步流程执行完毕！"
-          echo "====================================="
-
-          if [ -z "${MANIFEST_TAGS[*]}" ]; then
-              echo "❌ 架构清单列表为空！"
-              exit 1
-          fi
-
-          echo "多架构清单列表：${MANIFEST_TAGS[*]}"
-
-          # 使用 docker manifest create 命令创建清单列表
-          if docker manifest create "$ACR_IMAGE" "${MANIFEST_TAGS[@]}"; then
-              echo "✅ 多架构清单列表创建成功"
-          else
-              echo "❌ 多架构清单列表创建失败！"
-              exit 1
-          fi
-
-          # 使用 docker manifest push 命令将清单列表推送到仓库
-          if docker manifest push "$ACR_IMAGE"; then
-              echo "✅ 多架构清单列表 $ACR_IMAGE 推送成功！国内地址：$ACR_IMAGE"
-              echo "现在可以使用 'docker pull $ACR_IMAGE' 拉取适合当前架构的镜像了。"
-          else
-              echo "❌ 多架构清单列表 $ACR_IMAGE 推送失败！"
-              exit 1
-          fi
-
-          echo "====================================="
-          echo "🎉 镜像 $IMAGE 同步完成！国内地址：$ACR_IMAGE"
           echo "====================================="
       # 登出 Aliyun ACR
       - name: Logout from Aliyun ACR
