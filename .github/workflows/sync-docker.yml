@@ -43,6 +43,9 @@ jobs:
           # 分割平台列表
           IFS=',' read -r -a PLATFORMS <<< "${{ github.event.inputs.platforms }}"
 
+          # 多架构清单列表
+          MANIFEST_TAGS=()
+
           # 遍历每个镜像进行同步
           for IMAGE in "${IMAGES[@]}"; do
               # 跳过空值（避免分隔符导致的空元素）
@@ -108,6 +111,7 @@ jobs:
 
                   echo "推送镜像到阿里云 ACR：$PLATFORM_ACR_IMAGE"
                   if docker push "$PLATFORM_ACR_IMAGE"; then
+                      MANIFEST_TAGS+=("${PLATFORM_ACR_IMAGE}")
                       echo "✅ 镜像 $IMAGE 同步完成！国内地址：$PLATFORM_ACR_IMAGE"
                   else
                       echo "❌ 推送镜像 $PLATFORM_ACR_IMAGE 失败"
@@ -121,12 +125,12 @@ jobs:
           echo "🎉 所有镜像同步流程执行完毕！"
           echo "====================================="
 
-          # 创建多架构清单列表
-          echo "开始创建多架构清单列表：$ACR_IMAGE"
-          MANIFEST_TAGS=()
-          for PLATFORM in "${PLATFORMS[@]}"; do
-              MANIFEST_TAGS+=("${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/$(echo "$IMAGE_FULL-$PLATFORM" | tr '/' '_')")
-          done
+          if [ -z "${MANIFEST_TAGS[*]}" ]; then
+              echo "❌ 架构清单列表为空！"
+              exit 1
+          fi
+
+          echo "多架构清单列表：${MANIFEST_TAGS[*]}"
 
           # 使用 docker manifest create 命令创建清单列表
           if docker manifest create "$ACR_IMAGE" "${MANIFEST_TAGS[@]}"; then
