@@ -1,0 +1,94 @@
+# 同步 Docker Hub 镜像 Aliyun ACR（使用 Docker Buildx imagetools）
+name: Sync Docker Hub images to Aliyun ACR (with buildx imagetools)
+# 触发条件
+on:
+  # 手动触发
+  workflow_dispatch:
+    # 输入参数
+    inputs:
+      # 镜像列表
+      images:
+        description: 'Docker Hub 镜像列表（多个镜像用空格/换行分隔，如：nginx:latest docker.io/redis:6.2 quay.io/calico/apiserver:v3.31.4）'
+        required: true
+
+jobs:
+  # 同步多个镜像
+  sync-multiple-images:
+    # 运行环境
+    runs-on: ubuntu-latest
+    steps:
+      # 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+      # 设置 Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      # 登录 Aliyun ACR
+      - name: Login to Aliyun ACR
+        run: |
+          docker login -u "${{ secrets.ACR_USERNAME }}" -p "${{ secrets.ACR_PASSWORD }}" ${{ secrets.ACR_REGISTRY }}
+      # 同步多个镜像
+      - name: Sync multiple images to Aliyun ACR
+        run: |
+          # 分割镜像列表并遍历
+          IFS=$' \n' read -r -a IMAGE_LIST <<< "${{ github.event.inputs.images }}"
+
+          # 遍历每个镜像进行同步
+          for IMAGE in "${IMAGE_LIST[@]}"; do
+              # 跳过空值（避免分隔符导致的空元素）
+              [ -z "$IMAGE" ] && continue
+
+              echo "====================================="
+              echo "开始处理镜像：$IMAGE"
+              echo "====================================="
+
+              # 补全 docker.io 前缀（仅无域名时）
+              if [[ "$IMAGE" != *.*/* && "$IMAGE" == *:* && "$IMAGE" != */* ]]; then
+                  IMAGE_FULL="docker.io/$IMAGE"
+              else
+                  IMAGE_FULL="$IMAGE"
+              fi
+
+              # 判断镜像名是否包含 ":"
+              if [[ "$IMAGE_FULL" == *:* ]]; then
+                  # 有冒号：正常提取 TAG
+                  IMAGE_TAG=$(echo "$IMAGE_FULL" | awk -F ':' '{print $NF}')
+              else
+                  # 无冒号：设为 latest，并修正 IMAGE_FULL
+                  IMAGE_TAG="latest"
+                  IMAGE_FULL="${IMAGE_FULL}:latest"
+              fi
+
+              ACR_IMAGE="${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/$(echo "$IMAGE_FULL" | tr '/' '_')"
+
+              # 核心逻辑：非 latest 标签时检查ACR是否已存在该镜像
+              if [ "$IMAGE_TAG" != "latest" ]; then
+                  echo "检查阿里云ACR中是否存在镜像：$ACR_IMAGE"
+                  # 用 docker manifest inspect 检查镜像是否存在（无输出则不存在）
+                  if docker manifest inspect "$ACR_IMAGE" > /dev/null 2>&1; then
+                      echo "✅ 镜像 $ACR_IMAGE 已存在，跳过同步"
+                      echo ""
+                      continue
+                  else
+                      echo "🔍 镜像 $ACR_IMAGE 不存在，开始同步"
+                  fi
+              else
+                  echo "📌 镜像标签为 latest，直接同步（不检查是否存在）"
+              fi
+
+              echo "构建跨平台镜像：$IMAGE_FULL → $ACR_IMAGE"
+              if docker buildx imagetools create --tag "$ACR_IMAGE" "$IMAGE_FULL"; then
+                  echo "✅ 镜像 $IMAGE 同步完成！国内地址：$ACR_IMAGE"
+              else
+                  echo "❌ 镜像 $IMAGE 同步失败！"
+              fi
+          done
+
+          echo "====================================="
+          echo "🎉 所有镜像同步流程执行完毕！"
+          echo "====================================="
+      # 登出 Aliyun ACR
+      - name: Logout from Aliyun ACR
+        if: always()  # 无论前面步骤是否成功，都执行登出
+        run: |
+          docker logout ${{ secrets.ACR_REGISTRY }}
