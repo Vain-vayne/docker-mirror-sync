@@ -87,6 +87,7 @@ jobs:
                       echo "检查阿里云ACR中是否存在镜像：$PLATFORM_ACR_IMAGE"
                       # 用 docker manifest inspect 检查镜像是否存在（无输出则不存在）
                       if docker manifest inspect "$PLATFORM_ACR_IMAGE" > /dev/null 2>&1; then
+                          MANIFEST_TAGS+=("${PLATFORM_ACR_IMAGE}")
                           echo "✅ 镜像 $PLATFORM_ACR_IMAGE 已存在，跳过同步"
                           echo ""
                           continue
