@@ -77,7 +77,9 @@ jobs:
               fi
 
               echo "构建跨平台镜像：$IMAGE_FULL → $ACR_IMAGE"
-              if docker buildx imagetools create --tag "$ACR_IMAGE" "$IMAGE_FULL"; then
+              export BUILDX_EXPERIMENTAL=1
+              export DOCKER_CLI_EXPERIMENTAL=enabled
+              if docker buildx imagetools copy --tag "$ACR_IMAGE" "$IMAGE_FULL"; then
                   echo "✅ 镜像 $IMAGE 同步完成！国内地址：$ACR_IMAGE"
               else
                   echo "❌ 镜像 $IMAGE 同步失败！"
