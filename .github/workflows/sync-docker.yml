@@ -1,15 +1,20 @@
-# 同步 Docker Hub 镜像 Aliyun ACR（使用 Docker Buildx imagetools）
-name: Sync Docker Hub images to Aliyun ACR (with buildx imagetools)
+# 同步 Docker Hub 镜像到 Aliyun ACR
+name: Sync Docker Hub images to Aliyun ACR
 # 触发条件
 on:
   # 手动触发
   workflow_dispatch:
     # 输入参数
     inputs:
-      # 镜像列表
+      # 输入参数：镜像列表
       images:
         description: 'Docker Hub 镜像列表（多个镜像用空格/换行分隔，如：nginx:latest docker.io/redis:6.2 quay.io/calico/apiserver:v3.31.4）'
         required: true
+      # 输入参数：目标平台架构
+      platforms:
+        description: '目标平台架构（多个平台用逗号分隔，如：linux/amd64,linux/arm64,linux/arm/v7）'
+        required: false
+        default: 'linux/amd64,linux/arm64'
 
 jobs:
   # 同步多个镜像
@@ -23,6 +28,8 @@ jobs:
       # 设置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
       # 登录 Aliyun ACR
       - name: Login to Aliyun ACR
         run: |
@@ -31,15 +38,19 @@ jobs:
       - name: Sync multiple images to Aliyun ACR
         run: |
           # 分割镜像列表并遍历
-          IFS=$' \n' read -r -a IMAGE_LIST <<< "${{ github.event.inputs.images }}"
+          IFS=$' \n' read -r -a IMAGES <<< "${{ github.event.inputs.images }}"
+
+          # 分割平台列表
+          IFS=',' read -r -a PLATFORMS <<< "${{ github.event.inputs.platforms }}"
 
           # 遍历每个镜像进行同步
-          for IMAGE in "${IMAGE_LIST[@]}"; do
+          for IMAGE in "${IMAGES[@]}"; do
               # 跳过空值（避免分隔符导致的空元素）
               [ -z "$IMAGE" ] && continue
 
               echo "====================================="
               echo "开始处理镜像：$IMAGE"
+              echo "目标平台：${{ github.event.inputs.platforms }}"
               echo "====================================="
 
               # 补全 docker.io 前缀（仅无域名时）
@@ -52,42 +63,90 @@ jobs:
               # 判断镜像名是否包含 ":"
               if [[ "$IMAGE_FULL" == *:* ]]; then
                   # 有冒号：正常提取 TAG
-                  IMAGE_TAG=$(echo "$IMAGE_FULL" | awk -F ':' '{print $NF}')
+                  TAG=$(echo "$IMAGE_FULL" | awk -F ':' '{print $NF}')
               else
                   # 无冒号：设为 latest，并修正 IMAGE_FULL
-                  IMAGE_TAG="latest"
+                  TAG="latest"
                   IMAGE_FULL="${IMAGE_FULL}:latest"
               fi
 
+              # 构建基础镜像名（不包含平台）
               ACR_IMAGE="${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/$(echo "$IMAGE_FULL" | tr '/' '_')"
 
-              # 核心逻辑：非 latest 标签时检查ACR是否已存在该镜像
-              if [ "$IMAGE_TAG" != "latest" ]; then
-                  echo "检查阿里云ACR中是否存在镜像：$ACR_IMAGE"
-                  # 用 docker manifest inspect 检查镜像是否存在（无输出则不存在）
-                  if docker manifest inspect "$ACR_IMAGE" > /dev/null 2>&1; then
-                      echo "✅ 镜像 $ACR_IMAGE 已存在，跳过同步"
+              # 遍历每个平台进行同步
+              for PLATFORM in "${PLATFORMS[@]}"; do
+
+                  # 构建特定平台的目标镜像名 (通常包含平台信息)
+                  PLATFORM_ACR_IMAGE="${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/$(echo "$IMAGE_FULL-$PLATFORM" | tr '/' '_')"
+
+                  # 核心逻辑：非 latest 标签时检查ACR是否已存在该镜像
+                  if [ "$TAG" != "latest" ]; then
+                      echo "检查阿里云ACR中是否存在镜像：$PLATFORM_ACR_IMAGE"
+                      # 用 docker manifest inspect 检查镜像是否存在（无输出则不存在）
+                      if docker manifest inspect "$PLATFORM_ACR_IMAGE" > /dev/null 2>&1; then
+                          echo "✅ 镜像 $PLATFORM_ACR_IMAGE 已存在，跳过同步"
+                          echo ""
+                          continue
+                      else
+                          echo "🔍 镜像 $PLATFORM_ACR_IMAGE 不存在，开始同步"
+                      fi
+                  else
+                      echo "📌 镜像标签为 latest，直接同步（不检查是否存在）"
+                  fi
+
+                  # 拉取镜像（指定平台）
+                  echo "拉取镜像：$IMAGE_FULL(平台: $PLATFORM)"
+                  if ! docker pull --platform "${PLATFORM}" "$IMAGE_FULL"; then
+                      echo "❌ 拉取失败，跳过该镜像"
                       echo ""
                       continue
-                  else
-                      echo "🔍 镜像 $ACR_IMAGE 不存在，开始同步"
                   fi
-              else
-                  echo "📌 镜像标签为 latest，直接同步（不检查是否存在）"
-              fi
 
-              echo "构建跨平台镜像：$IMAGE_FULL → $ACR_IMAGE"
-              export BUILDX_EXPERIMENTAL=1
-              export DOCKER_CLI_EXPERIMENTAL=enabled
-              if docker buildx imagetools copy --debug "$ACR_IMAGE" "$IMAGE_FULL"; then
-                  echo "✅ 镜像 $IMAGE 同步完成！国内地址：$ACR_IMAGE"
-              else
-                  echo "❌ 镜像 $IMAGE 同步失败！"
-              fi
+                  # 打标签并推送
+                  echo "打标签：$IMAGE_FULL → $PLATFORM_ACR_IMAGE"
+                  docker tag "$IMAGE_FULL" "$PLATFORM_ACR_IMAGE"
+
+                  echo "推送镜像到阿里云 ACR：$PLATFORM_ACR_IMAGE"
+                  if docker push "$PLATFORM_ACR_IMAGE"; then
+                      echo "✅ 镜像 $IMAGE 同步完成！国内地址：$PLATFORM_ACR_IMAGE"
+                  else
+                      echo "❌ 推送镜像 $PLATFORM_ACR_IMAGE 失败"
+                  fi
+              done
+
+              echo ""
           done
 
           echo "====================================="
           echo "🎉 所有镜像同步流程执行完毕！"
+          echo "====================================="
+
+          # 创建多架构清单列表
+          echo "开始创建多架构清单列表：$ACR_IMAGE"
+          MANIFEST_TAGS=()
+          for PLATFORM in "${PLATFORMS[@]}"; do
+              MANIFEST_TAGS+=("${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/$(echo "$IMAGE_FULL-$PLATFORM" | tr '/' '_')")
+          done
+
+          # 使用 docker manifest create 命令创建清单列表
+          if docker manifest create "$ACR_IMAGE" "${MANIFEST_TAGS[@]}"; then
+              echo "✅ 多架构清单列表创建成功"
+          else
+              echo "❌ 多架构清单列表创建失败！"
+              exit 1
+          fi
+
+          # 使用 docker manifest push 命令将清单列表推送到仓库
+          if docker manifest push "$ACR_IMAGE"; then
+              echo "✅ 多架构清单列表 $ACR_IMAGE 推送成功！国内地址：$ACR_IMAGE"
+              echo "现在可以使用 'docker pull $ACR_IMAGE' 拉取适合当前架构的镜像了。"
+          else
+              echo "❌ 多架构清单列表 $ACR_IMAGE 推送失败！"
+              exit 1
+          fi
+
+          echo "====================================="
+          echo "🎉 镜像 $IMAGE 同步完成！国内地址：$ACR_IMAGE"
           echo "====================================="
       # 登出 Aliyun ACR
       - name: Logout from Aliyun ACR
