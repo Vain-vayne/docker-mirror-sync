@@ -57,10 +57,16 @@ jobs:
               echo "====================================="
 
               # 补全 docker.io 前缀（仅无域名时）
-              if [[ "$IMAGE" != *.*/* && "$IMAGE" == *:* && "$IMAGE" != */* ]]; then
-                  IMAGE_FULL="docker.io/$IMAGE"
-              else
-                  IMAGE_FULL="$IMAGE"
+              IMAGE_FULL="$IMAGE"
+              # 如果是简单名称，如 "nginx" 或 "nginx:latest"
+              if [[ "$IMAGE_FULL" != *.*/* ]]; then
+                  if [[ "$IMAGE_FULL" == */* ]]; then
+                      # 如果包含斜杠（如 library/nginx），直接加前缀
+                      IMAGE_FULL="docker.io/$IMAGE_FULL"
+                  else
+                      # 如果不包含斜杠（如 nginx），是否需要补全为 docker.io/library/xxx --- 待定
+                      IMAGE_FULL="docker.io/$IMAGE_FULL"
+                  fi
               fi
 
               # 判断镜像名是否包含 ":"
